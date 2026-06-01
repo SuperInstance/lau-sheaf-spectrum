@@ -1,275 +1,403 @@
 # lau-sheaf-spectrum
 
-**Spectral sheaf theory in Rust: sheaf Laplacians, Hodge decomposition, sheaf diffusion, connection Laplacians, sheaf neural networks, synchronization, and persistent sheaf cohomology.**
+**Spectral sheaf theory: sheaf Laplacians, Hodge decomposition, sheaf diffusion, connection Laplacians, sheaf neural networks, synchronization, and persistent sheaf cohomology.**
 
-This crate implements the intersection of sheaf cohomology and spectral graph theory — a powerful mathematical framework where every vertex in a graph gets a vector space (a "stalk"), edges carry linear maps ("restriction maps"), and the resulting sheaf Laplacian reveals the global structure of the system.
+`lau-sheaf-spectrum` sits at the intersection of **sheaf theory** and **spectral graph theory**. A cellular sheaf on a graph assigns vector spaces (stalks) to vertices and edges with linear restriction maps. The **sheaf Laplacian** L = DᵀD generalizes the graph Laplacian, and its spectral properties encode the global structure of the sheaf: harmonic sections, synchronization feasibility, diffusion behavior, and cohomology.
 
----
-
-## What This Does
-
-Given a graph and a cellular sheaf (vector spaces on vertices + linear maps on edges), this crate computes:
-
-1. **Sheaf Laplacian** — L = DᵀD where D is the coboundary operator. For constant sheaves, this recovers the standard graph Laplacian.
-2. **Hodge decomposition** — orthogonal splitting of sections into harmonic (ker L) and image (im Dᵀ) components.
-3. **Sheaf diffusion** — heat equation dx/dt = −Lx that converges to the harmonic projection.
-4. **Connection Laplacian** — for vector bundles with rotation/orthogonal transition maps on edges.
-5. **Sheaf neural networks** — diffusion-based graph learning layers: X′ = σ((I − tL) X W).
-6. **Synchronization analysis** — spectral gap, consensus, and synchronizability checking.
-7. **Persistent sheaf cohomology** — filtration-based barcode computation for H⁰.
-
-Everything is pure Rust, uses `nalgebra` for linear algebra, and is fully serializable with `serde`.
-
----
+This crate provides the spectral toolkit for working with such sheaves — from computing eigenvalues to training neural networks that respect the sheaf structure.
 
 ## Key Idea
 
-> **A sheaf on a graph is a local-to-global data structure.** Each vertex stores data in its stalk, restriction maps enforce consistency across edges, and the sheaf Laplacian measures how "harmonious" the global assignment is. Zero eigenvalues = perfectly consistent sections; nonzero eigenvalues = inconsistency that diffusion will smooth out.
+On a graph G with a sheaf F:
 
----
+1. Each vertex v gets a vector space F(v) = R^{d_v}
+2. Each edge e = (u,v) gets a vector space F(e) = R^{d_e}
+3. Restriction maps F_{v→e}: F(v) → F(e) connect them
+
+The **coboundary operator** D: C⁰(F) → C¹(F) encodes the signed restriction maps. The **sheaf Laplacian** L = DᵀD is the central object:
+
+| Spectral property | Meaning |
+|---|---|
+| ker(L) = H⁰(F) | Space of harmonic (globally consistent) sections |
+| Spectral gap λ₂ | Controls synchronization feasibility and diffusion speed |
+| Eigenvalue multiplicity of 0 | Dimension of H⁰ (number of independent global sections) |
+| Full spectrum | Determines diffusion, neural network behavior, and connectivity |
+
+For a constant sheaf (identity restrictions, uniform dimension d), the sheaf Laplacian is just the Kronecker product L_graph ⊗ I_d, and H⁰ ≅ R^d (d copies of the constant functions).
 
 ## Install
 
+Add to your `Cargo.toml`:
+
 ```toml
 [dependencies]
-lau-sheaf-spectrum = "0.1"
+lau-sheaf-spectrum = "0.1.0"
 ```
 
-Requires Rust 2021 edition. Dependencies: `nalgebra` (with serde), `serde`/`serde_json`.
+Requires **Rust 2021 edition**. Dependencies:
 
----
+- [`nalgebra`](https://crates.io/crates/nalgebra) 0.33 (with `serde-serialize`) — linear algebra and eigendecomposition
+- [`serde`](https://crates.io/crates/serde) 1 + [`serde_json`](https://crates.io/crates/serde_json) 1 — serialization
+- [`approx`](https://crates.io/crates/approx) 0.5 (dev only) — approximate equality in tests
 
 ## Quick Start
+
+### Build a graph and constant sheaf
 
 ```rust
 use lau_sheaf_spectrum::prelude::*;
 
-fn main() {
-    // Build a graph
-    let graph = Graph::complete(5);
+// Create graphs
+let g = Graph::complete(5);
+let path = Graph::path(4);
+let cycle = Graph::cycle(6);
 
-    // Constant sheaf: every vertex gets R², all restriction maps = identity
-    let sheaf = Sheaf::constant(&graph, 2);
-
-    // Build the sheaf Laplacian
-    let laplacian = SheafLaplacian::build(&sheaf, &graph);
-    println!("Kernel dim (harmonic sections): {}", laplacian.kernel_dim());
-    println!("Spectral gap: {:.4}", laplacian.spectral_gap().unwrap());
-
-    // Hodge decomposition
-    let hodge = HodgeDecomposition::compute(&sheaf, &graph);
-    println!("Betti-0: {}", hodge.betti_0());
-
-    // Sheaf diffusion: converge to harmonic section
-    let diffusion = SheafDiffusion::new(&sheaf, &graph);
-    let x0 = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
-    let xt = diffusion.evolve(&x0, 50.0);
-    println!("After diffusion: {:?}", xt.as_slice());
-
-    // Persistent sheaf cohomology
-    let ps = PersistentSheaf::new(graph, sheaf);
-    let barcode = ps.compute_persistent_h0();
-    println!("H⁰ barcode: {} bars", barcode.len());
-}
+// Constant sheaf: every vertex gets R^d, every restriction is identity
+let sheaf = Sheaf::constant(&g, 3); // 3D stalks
 ```
 
----
+### Sheaf Laplacian and spectral analysis
 
-## API Reference
+```rust
+let sl = SheafLaplacian::build(&sheaf, &g);
 
-### `Graph` — undirected weighted graph
-
-| method | description |
-|---|---|
-| `new(n)` | n isolated vertices |
-| `complete(n)` / `path(n)` / `cycle(n)` | factory constructors |
-| `add_edge(u, v)` / `add_weighted_edge(u, v, w)` | mutation |
-| `laplacian()` | standard graph Laplacian D − A |
-| `incidence_matrix()` | oriented incidence matrix |
-| `is_connected()` | BFS connectivity check |
-
-### `Sheaf` — cellular sheaf on a graph
-
-| method | description |
-|---|---|
-| `constant(graph, d)` | every stalk = ℝᵈ, restriction maps = identity |
-| `from_raw(dims, edge_dims, maps_data)` | custom restriction maps from flat data |
-| `coboundary(graph)` | coboundary operator D (total_edge_dim × total_vertex_dim) |
-| `total_vertex_dim()` / `total_edge_dim()` | summed stalk dimensions |
-
-`VectorSheaf`: a sheaf with a concrete section (values at vertices).
-
-### `SheafLaplacian` — L = DᵀD with eigendecomposition
-
-| method | description |
-|---|---|
-| `build(sheaf, graph)` | construct + decompose |
-| `smallest_eigenvalue()` | λ_min (should be ≥ 0 for PSD) |
-| `spectral_gap()` | first nonzero eigenvalue |
-| `kernel_dim()` | dim ker L = dim H⁰ |
-| `fiedler_value()` | algebraic connectivity |
-
-### `HodgeDecomposition` — harmonic + image splitting
-
-| method | description |
-|---|---|
-| `compute(sheaf, graph)` | build decomposition |
-| `project_harmonic(x)` / `project_image(x)` | project onto subspaces |
-| `decompose(x)` | (harmonic, image) pair |
-| `betti_0()` | dim H⁰ |
-| `is_harmonic(x)` | check if section is in ker L |
-
-### `SheafDiffusion` — heat equation dx/dt = −Lx
-
-| method | description |
-|---|---|
-| `evolve(x0, t)` | exact: x(t) = exp(−tL) x₀ |
-| `step(x0, dt, steps)` | discrete Euler: x_{k+1} = (I − dt·L) x_k |
-| `converge_to_harmonic(x0, dt, steps, tol)` | iterate + check residual |
-| `energy_trajectory(x0, dt, steps)` | E(x) = xᵀLx at each step |
-| `convergence_rate()` | spectral gap |
-
-### `ConnectionLaplacian` — vector bundle connections
-
-| method | description |
-|---|---|
-| `build(graph, d, connections)` | custom transition maps per edge |
-| `trivial(graph, d)` | identity connections |
-| `spectral_gap()` / `kernel_dim()` | spectral properties |
-
-### `SheafNNLayer` / `SheafConvNet` — sheaf neural networks
-
-Layer: `X′ = σ((I − tL) X W)`
-
-| method | description |
-|---|---|
-| `SheafNNLayer::new(d_in, d_out, t, activation)` | Xavier-initialized weights |
-| `forward(x, laplacian)` | single-layer forward pass |
-| `SheafConvNet::new(&[sizes], t, activation)` | multi-layer constructor |
-| `forward(x, laplacian)` | multi-layer forward pass |
-
-Activations: `Identity`, `ReLU`, `LeakyReLU(α)`, `Tanh`, `Sigmoid`.
-
-### `ConsensusProblem` — multi-agent consensus
-
-| method | description |
-|---|---|
-| `standard(graph, d)` | constant-sheaf consensus |
-| `solve(x0)` | harmonic projection = consensus limit |
-| `disagreement(x)` | ‖x − x̄‖² = xᵀLx |
-
-### `PersistentSheaf` — persistent sheaf cohomology
-
-| method | description |
-|---|---|
-| `compute_persistent_h0()` | fast union-find barcode |
-| `compute_persistent_h0_exact()` | full Laplacian at each step |
-| `compute_h1_bars()` | approximate H¹ via Euler characteristic |
-
-`Barcode`: collection of `Bar { birth, death, dim }`. Methods: `len`, `betti_at(t)`.
-
----
-
-## How It Works
-
-### Architecture
-
-```
-Graph + Sheaf
-  ├── SheafLaplacian::build()
-  │     └── coboundary D → L = DᵀD → eigen-decompose
-  ├── HodgeDecomposition
-  │     └── ker(L) ⊕ im(Dᵀ) orthogonal split
-  ├── SheafDiffusion
-  │     └── exp(−tL) via eigendecomposition
-  ├── ConnectionLaplacian
-  │     └── rotation/orthogonal transition maps
-  ├── SheafNNLayer
-  │     └── σ((I − tL) X W)
-  ├── ConsensusProblem
-  │     └── harmonic projection
-  └── PersistentSheaf
-        └── edge-weight filtration → barcode
+println!("Matrix size: {}×{}", sl.l.nrows(), sl.l.ncols());
+println!("Kernel dim (H⁰): {}", sl.kernel_dim());
+println!("Spectral gap: {:?}", sl.spectral_gap());
+println!("Fiedler value: {:?}", sl.fiedler_value());
+println!("Trace: {:.2}", sl.trace());
+println!("Eigenvalues: {:?}", sl.eigenvalues);
 ```
 
-### Coboundary Operator
+### Hodge decomposition
 
-For edge e = (u, v) with restriction maps F_{u→e} and F_{v→e}:
+```rust
+let hodge = HodgeDecomposition::compute(&sheaf, &g);
 
-Dₑ = [−F_{u→e} | F_{v→e}]
+println!("Betti-0 (harmonic dim): {}", hodge.betti_0());
+println!("Image dim: {}", hodge.image_dim());
 
-The full coboundary D stacks these block-rows for all edges. The sheaf Laplacian L = DᵀD is always positive semidefinite.
+// Any section splits into harmonic + image components
+let x = DVector::from_fn(sheaf.total_vertex_dim(), |i, _| (i as f64 + 1.0).sin());
+let (harmonic, image) = hodge.decompose(&x);
 
-### Eigen-decomposition
+println!("Is harmonic: {}", hodge.is_harmonic(&harmonic));
+```
 
-Uses `nalgebra`'s symmetric eigenvalue decomposition (Lanczos-based). Eigenvalues are sorted ascending; eigenvectors are stored as columns.
+### Sheaf diffusion (heat equation)
 
----
+```rust
+let diff = SheafDiffusion::new(&sheaf, &g);
 
-## The Math
+// Continuous: x(t) = exp(-tL) x(0)
+let x0 = DVector::from_vec(vec![10.0, -5.0, 3.0, -8.0, 0.0]);
+let xt = diff.evolve(&x0, 10.0);
 
-### Cellular Sheaves
+// Discrete steps
+let trajectory = diff.step(&x0, 0.01, 500);
+let energies = diff.energy_trajectory(&x0, 0.01, 500);
 
-A cellular sheaf F on a graph G assigns:
-- A vector space F(v) = ℝ^{d_v} to each vertex v ("stalk")
-- A vector space F(e) = ℝ^{d_e} to each edge e ("edge stalk")
-- A linear restriction map F_{v→e}: F(v) → F(e) for each incident pair
-
-The space of 0-cochains C⁰(F) = ⊕_v F(v) (sections). The coboundary D: C⁰ → C¹ is defined by restriction maps.
-
-### Sheaf Laplacian
-
-L = DᵀD : C⁰(F) → C⁰(F)
-
-Properties:
-- L is symmetric positive semidefinite
-- ker(L) = H⁰(F) (sheaf cohomology in degree 0)
-- For constant sheaf d=1 on a connected graph: ker(L) = span(1), L = graph Laplacian
-
-### Hodge Decomposition
-
-C⁰(F) = ker(L) ⊕ im(Dᵀ)
-
-The harmonic space ker(L) ≅ H⁰(F) captures globally consistent sections. The image space im(Dᵀ) captures "inconsistency." The decomposition is orthogonal.
-
-### Sheaf Diffusion
-
-The heat equation dx/dt = −Lx has solution x(t) = exp(−tL) x₀. As t → ∞, x(t) → P_harmonic · x₀ (projection onto harmonic space). Energy E(x) = xᵀLx decreases monotonically.
+// Convergence check
+let (xf, converged) = diff.converge_to_harmonic(&x0, 0.01, 5000, 1e-3);
+println!("Converged: {}", converged);
+```
 
 ### Connection Laplacian
 
-For a vector bundle with orthogonal connection maps ρ_{uv} on edges:
+```rust
+use nalgebra::DMatrix;
 
-(L_conn)_{uu} = deg(u) · I
-(L_conn)_{uv} = −ρ_{vu}
+let g = Graph::cycle(4);
+let d = 2;
+let angle = std::f64::consts::PI / 4.0;
+let rotation = DMatrix::from_row_slice(2, 2, &[
+    angle.cos(), -angle.sin(),
+    angle.sin(),  angle.cos(),
+]);
 
-Trivial connections (ρ = I) recover the sheaf Laplacian. Rotation connections model SO(n)-synchronization.
+// Non-trivial connection: rotation on each edge
+let connections: Vec<DMatrix<f64>> = (0..g.num_edges()).map(|_| rotation.clone()).collect();
+let cl = ConnectionLaplacian::build(&g, d, connections);
 
-### Persistent Sheaf Cohomology
+println!("Spectral gap: {:?}", cl.spectral_gap());
+println!("Kernel dim: {}", cl.kernel_dim());
+```
 
-Edges are sorted by weight to form a filtration. At each step, the sheaf Laplacian is computed and dim H⁰ is tracked. When two components merge, d bars die (where d is the stalk dimension). The resulting barcode captures the topological evolution of the sheaf.
+### Sheaf neural network
 
----
+```rust
+let g = Graph::cycle(4);
+let s = Sheaf::constant(&g, 2);
+let sl = SheafLaplacian::build(&s, &g);
+
+// Single layer: X' = σ((I - tL) X W)
+let layer = SheafNNLayer::new(3, 5, 0.1, Activation::ReLU);
+let x = DMatrix::zeros(s.total_vertex_dim(), 3);
+let out = layer.forward(&x, &sl);
+
+// Multi-layer network
+let net = SheafConvNet::new(&[3, 8, 4], 0.1, Activation::Tanh);
+let out = net.forward(&x, &sl);
+```
+
+### Synchronization and consensus
+
+```rust
+use lau_sheaf_spectrum::synchronization::{synchronization_gap, is_synchronizable, ConsensusProblem};
+
+let g = Graph::complete(4);
+let s = Sheaf::constant(&g, 1);
+
+let gap = synchronization_gap(&s, &g);
+let syncable = is_synchronizable(&s, &g);
+
+// Multi-agent consensus
+let cp = ConsensusProblem::standard(g, 2);
+let x0 = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+let consensus = cp.solve(&x0);
+let disagreement = cp.disagreement(&x0);
+```
+
+### Persistent sheaf cohomology
+
+```rust
+let g = Graph::path(4);
+let s = Sheaf::constant(&g, 1);
+let ps = PersistentSheaf::new(g, s);
+
+// Union-Find based (fast)
+let barcode = ps.compute_persistent_h0();
+
+// Exact Laplacian-based (accurate)
+let exact_barcode = ps.compute_persistent_h0_exact();
+
+let (b0, b1) = barcode.betti_at(0.0);
+println!("Betti-0 at t=0: {}", b0);
+```
+
+## API Reference
+
+### Graph (`graph`)
+
+| Type/Method | Description |
+|---|---|
+| `Graph` | Undirected graph with optional edge weights |
+| `Graph::complete(n)` | Complete graph K_n |
+| `Graph::path(n)` | Path graph P_n |
+| `Graph::cycle(n)` | Cycle graph C_n |
+| `Graph::laplacian()` | Standard graph Laplacian L = D − A |
+| `Graph::incidence_matrix()` | Oriented incidence matrix B |
+
+### Sheaf (`sheaf`)
+
+| Type | Description |
+|---|---|
+| `Sheaf` | Cellular sheaf: vertex/edge stalks + restriction maps |
+| `Sheaf::constant(g, d)` | Constant sheaf (identity restrictions, uniform dim d) |
+| `Sheaf::coboundary(g)` | Build the coboundary operator D |
+| `VectorSheaf` | Sheaf with a specific section assignment |
+
+### Sheaf Laplacian (`laplacian`)
+
+| Type/Method | Description |
+|---|---|
+| `SheafLaplacian` | L = DᵀD with eigendecomposition |
+| `.kernel_dim()` | dim ker(L) = dim H⁰ |
+| `.spectral_gap()` | Smallest nonzero eigenvalue |
+| `.fiedler_value()` | Second smallest eigenvalue |
+| `.trace()` | Sum of eigenvalues |
+
+### Hodge Decomposition (`hodge`)
+
+| Type/Method | Description |
+|---|---|
+| `HodgeDecomposition` | Orthogonal splitting C⁰ = ker(L) ⊕ im(Dᵀ) |
+| `.betti_0()` | dim H⁰ |
+| `.decompose(x)` | Split into (harmonic, image) components |
+| `.is_harmonic(x)` | Check if x ∈ ker(L) |
+
+### Sheaf Diffusion (`diffusion`)
+
+| Type/Method | Description |
+|---|---|
+| `SheafDiffusion` | Heat equation dx/dt = −Lx on sheaves |
+| `.evolve(x0, t)` | Continuous: x(t) = exp(−tL)x₀ |
+| `.step(x0, dt, n)` | Discrete: x_{k+1} = (I − dt·L)x_k |
+| `.converge_to_harmonic(...)` | Run until Lx ≈ 0 |
+| `.energy_trajectory(...)` | E(x) = xᵀLx at each step |
+| `.convergence_rate()` | Spectral gap |
+
+### Connection Laplacian (`connection`)
+
+| Type/Method | Description |
+|---|---|
+| `ConnectionLaplacian` | L_conn for vector bundles with transition maps |
+| `.build(g, d, connections)` | From explicit connection maps per edge |
+| `.trivial(g, d)` | Identity connections → standard Laplacian |
+| `.spectral_gap()` | Smallest nonzero eigenvalue |
+| `.kernel_dim()` | Dimension of flat sections |
+
+### Sheaf Neural Networks (`neural`)
+
+| Type | Description |
+|---|---|
+| `SheafNNLayer` | Single layer: σ((I − tL) X W) |
+| `SheafConvNet` | Multi-layer sheaf convolutional network |
+| `Activation` | Identity, ReLU, LeakyReLU, Tanh, Sigmoid |
+
+### Synchronization (`synchronization`)
+
+| Function/Type | Description |
+|---|---|
+| `synchronization_gap(sheaf, graph)` | Spectral gap of sheaf Laplacian |
+| `is_synchronizable(sheaf, graph)` | ker(L) = 0? |
+| `ConsensusProblem` | Multi-agent consensus via harmonic projection |
+
+### Persistent Sheaf Cohomology (`persistent`)
+
+| Type/Method | Description |
+|---|---|
+| `PersistentSheaf` | Filtration → barcode |
+| `Bar` | Single bar: birth, death, dimension |
+| `Barcode` | Collection of bars with betti_at(t) |
+| `.compute_persistent_h0()` | Fast union-find based |
+| `.compute_persistent_h0_exact()` | Exact Laplacian recomputation |
+
+## How It Works
+
+### 1. Graph → Sheaf → Coboundary
+
+Given a graph G = (V, E) and a sheaf F:
+- Vertex stalk: F(v) = R^{d_v} for each v ∈ V
+- Edge stalk: F(e) = R^{d_e} for each e ∈ E  
+- Restriction maps: F_{v→e}: R^{d_v} → R^{d_e}
+
+The **coboundary operator** D is a matrix of size (Σ d_e) × (Σ d_v). For edge e = (u, v):
+
+```
+D_e = [−F_{u→e} | F_{v→e}]
+```
+
+(the negative goes on the tail, positive on the head).
+
+### 2. Sheaf Laplacian = DᵀD
+
+L is positive semi-definite, symmetric, and its kernel dimension equals dim H⁰(F). Eigendecomposition is computed via nalgebra's `symmetric_eigen`.
+
+### 3. Hodge Decomposition
+
+The space of 0-cochains splits:
+
+```
+C⁰(F) = ker(L) ⊕ im(Dᵀ)
+```
+
+ker(L) = harmonic sections ≅ H⁰(F). This is computed by separating eigenvectors by eigenvalue threshold (ε = 10⁻⁸).
+
+### 4. Diffusion
+
+The heat equation dx/dt = −Lx has solution x(t) = exp(−tL) x₀. Using eigendecomposition:
+
+```
+x(t) = Σ_k exp(−λ_k t) ⟨v_k, x₀⟩ v_k
+```
+
+As t → ∞, only the harmonic components (λ_k = 0) survive, projecting x₀ onto H⁰.
+
+### 5. Connection Laplacian
+
+For a vector bundle with connection (transition) maps ρ_{uv} on each edge:
+
+```
+L_conn = block matrix:
+  (u,u): deg(u) · I
+  (u,v): −ρ_{vu}
+```
+
+The trivial connection (ρ = I) recovers the sheaf Laplacian for the constant sheaf. Non-trivial connections model twisted/rotated data.
+
+### 6. Sheaf Neural Networks
+
+Each layer computes:
+
+```
+X' = σ((I − tL) X W)
+```
+
+where t is the diffusion time, L is the sheaf Laplacian, W is a learnable weight matrix, and σ is an activation. This generalizes graph convolutional networks to the sheaf setting.
+
+### 7. Synchronization
+
+A sheaf **supports synchronization** if H⁰(F) = 0 (only the zero section is harmonic). The spectral gap measures *how quickly* agents can synchronize. Consensus is computed by projecting initial states onto the harmonic subspace.
+
+### 8. Persistent Cohomology
+
+Edges are added in order of increasing weight. At each step, the sheaf Laplacian's kernel dimension is checked:
+- If H⁰ drops by d, d bars die at this weight
+- Remaining bars are infinite
+
+The **exact** method rebuilds the full Laplacian at each step; the **union-find** method tracks connected components (correct for constant sheaves).
+
+## The Math
+
+### Cellular Sheaves on Graphs
+
+A **cellular sheaf** F on a graph G = (V, E) assigns:
+- A vector space F(v) to each vertex v
+- A vector space F(e) to each edge e
+- Linear maps F_{v→e}: F(v) → F(e) for each incidence v ∈ e
+
+A **global section** s assigns a vector s(v) ∈ F(v) to each vertex such that F_{u→e}(s(u)) = F_{v→e}(s(v)) for every edge e = (u,v).
+
+### The Coboundary Complex
+
+The **coboundary operator** D: C⁰(F) → C¹(F) maps 0-cochains (vertex assignments) to 1-cochains (edge assignments):
+
+```
+(Ds)(e) = F_{v→e}(s(v)) − F_{u→e}(s(u))
+```
+
+A section s is global iff Ds = 0 (closed 0-cochain).
+
+### Cohomology
+
+```
+H⁰(F) = ker(D)           (global sections)
+H¹(F) = ker(D*)/im(D)    (obstructions)
+```
+
+where D* is the adjoint. In matrix terms: H⁰ = ker(L) where L = DᵀD.
+
+### Spectral Gap and Algebraic Connectivity
+
+For connected graphs with constant sheaf of dimension d:
+- λ₁ = 0 with multiplicity d (constant sections)
+- λ₂ = algebraic connectivity × d
+- λ₂ > 0 guarantees synchronization converges at rate O(exp(−λ₂t))
+
+### Connection Laplacian
+
+For SO(d)-valued connections (rotations), the connection Laplacian's kernel consists of **flat sections**: assignments where s(v) = ρ_{vu} s(u) for all edges. If no flat sections exist (other than zero), the graph **synchronizes**.
 
 ## Test Suite
 
-**55 tests** across all modules:
+**54 tests** covering:
 
-| module | tests |
-|---|---|
-| `graph` | 5 |
-| `sheaf` | 3 |
-| `laplacian` | 8 |
-| `hodge` | 6 |
-| `diffusion` | 7 |
-| `connection` | 5 |
-| `neural` | 6 |
-| `synchronization` | 7 |
-| `persistent` | 8 |
+- Graph operations (5 tests): construction, Laplacian, connectivity, incidence matrix
+- Sheaf construction (3 tests): dimensions, coboundary, zero sections
+- Sheaf Laplacian (8 tests): PSD property, kernel dim, spectral gap, symmetry, trace
+- Hodge decomposition (6 tests): Betti numbers, direct sum, orthogonality, harmonicity
+- Sheaf diffusion (7 tests): convergence to constants, energy decrease, multi-dimensional
+- Connection Laplacian (5 tests): trivial connection, PSD, kernel, symmetry, rotations
+- Sheaf neural networks (5 tests): activation functions, output shapes, serialization
+- Synchronization (7 tests): gaps, feasibility, consensus, disagreement
+- Persistent cohomology (8 tests): barcodes, betti numbers, exact computation, serialization
 
-Run: `cargo test`
+Run with:
 
----
+```bash
+cargo test
+```
 
 ## License
 
